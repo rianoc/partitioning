@@ -26,23 +26,23 @@ if[not system"p";system"p 5010"]
 
 \l tick/u.q
 \d .u
-ld:{if[not type key L::`$(-10_string L),string x;.[L;();:;()]];i::j::-11!(-2;L);if[0<=type i;-2 (string L)," is a corrupt log. Truncate to length ",(string last i)," and restart";exit 1];hopen L};
-tick:{init[];if[not min(`time`sym~2#key flip value@)each t;'`timesym];@[;`sym;`g#]each t;d::.z.D;if[l::count y;L::`$":",y,"/",x,10#".";l::ld d]};
+n:("J"$.z.x 2)*`long$1024 xexp 2;
+p:{f:x where x like (get `..src),"_*";$[count f;max "J"$.[;((::);1)]"_" vs'string f;0]}key `:.;
+ld:{if[not type key L::`$(":",(get `..src)),"_",string x;.[L;();:;()]];i::j::-11!(-2;L);if[0<=type i;-2 (string L)," is a corrupt log. Truncate to length ",(string last i)," and restart";exit 1];hopen L};
+tick:{init[];if[not min(`time`sym~2#key flip value@)each t;'`timesym];@[;`sym;`g#]each t;if[l::count y;L::`$":",y,"/",x,"_",10#".";l::ld p]};
 
-endofday:{end d;d+:1;if[l;hclose l;l::0(`.u.ld;d)]};
-ts:{if[d<x;if[d<x-1;system"t 0";'"more than one day?"];endofday[]]};
+endofpart:{end p;p+:1;if[l;hclose l;l::0(`.u.ld;p)]};
 
 if[system"t";
- .z.ts:{pub'[t;value each t];@[`.;t;@[;`sym;`g#]0#];i::j;ts .z.D};
+ .z.ts:{pub'[t;value each t];@[`.;t;@[;`sym;`g#]0#];i::j};
  upd:{[t;x]
- if[not -16=type first first x;if[d<"d"$a:.z.P;.z.ts[]];a:"n"$a;x:$[0>type first x;a,x;(enlist(count first x)#a),x]];
- t insert x;if[l;l enlist (`upd;t;x);j+:1];}];
+ if[not -16=type first first x;a:.z.P;x:$[0>type first x;a,x;(enlist(count first x)#a),x]];
+ t insert x;if[l;l enlist (`upd;t;x);j+:1;if[n<=hcount L;.z.ts[];endofpart[]]];}];
 
-if[not system"t";system"t 1000";
- .z.ts:{ts .z.D};
- upd:{[t;x]ts"d"$a:.z.P;
- if[not -16=type first first x;a:"n"$a;x:$[0>type first x;a,x;(enlist(count first x)#a),x]];
- f:key flip value t;pub[t;$[0>type first x;enlist f!x;flip f!x]];if[l;l enlist (`upd;t;x);i+:1];}];
+if[not system"t";
+ upd:{[t;x] a:.z.P;
+ if[not -16=type first first x;x:$[0>type first x;a,x;(enlist(count first x)#a),x]];
+ f:key flip value t;pub[t;$[0>type first x;enlist f!x;flip f!x]];if[l;l enlist (`upd;t;x);i+:1;if[n<=hcount L;endofpart[]];];}];
 
 \d .
 .u.tick[src;.z.x 1];
@@ -53,9 +53,10 @@ if[not system"t";system"t 1000";
  .u.i - msg count in log file
  .u.j - total msg count (log file plus those held in buffer)
  .u.t - table names
- .u.L - tp log filename, e.g. `:./sym2008.09.11
+ .u.L - tp log filename
  .u.l - handle to tp log file
- .u.d - date
+ .u.p - partition
+ .u.n - bytes before flush
 
 /test
 >q tick.q
