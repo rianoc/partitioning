@@ -76,7 +76,7 @@ Taking [kdb-tick](https://github.com/KxSystems/kdb-tick) as a template very few 
     2020.06.27
     ```
 
-The full extent of the changes are best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/commit/ab0e32942a75a15df5b8e4d43b285dafe46031ce) of the changes being made.
+The full extent of the changes are best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/commit/ab0e32942a75a15df5b8e4d43b285dafe46031ce).
 
 Once the HDB process reloads after an hour threshold has been crossed you can explore the data. On disk the `int` partition folders can be seen:
 
@@ -113,51 +113,98 @@ select from trade where int within hour 2020.06.26D0 2020.06.27D16
 One possible concern with hourly partitioning would be the fact that data does not always stream at a steady rate. This would lead to partitions of varying sizes and would not protect a system well if there was a sudden surge in volume of incoming data.
 
 To create a system with a more strictly controlled upper limit on memory usage we will build an example which will flush data to disk based on a triggered condition on the size of the tickerplant log. This will be used as a proxy for how much RAM the RDB is likely to be using. This trigger could easily be reconfigured to fire based on total system memory usage or any other chosen value.
+For this example implementation the size of the tickerplant log file is used to control when to flush data.
 
-The code is best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/) of the changes made.
-
-The key logic is the trigger which checks the size of the TP log file. The example value is set to `5MB`:
+A new command line value is passed which is accessed with [.z.x](https://code.kx.com/q/ref/dotz/#zx-argv) and multiplied by the number of bytes in a megabyte:
 
 ```q
-//ToDo: show logic which checks TP log size
+\d .u
+n:("J"$.z.x 2)*`long$1024 xexp 2;
 ```
+
+This new `n` variable is compared to the size of the log file as given by [hcount](https://code.kx.com/q/ref/hcount/) after each time data is appended. If the threshold is breached then the `endofpart` call is triggered:
+
+```q
+if[n<=hcount L;endofpart[]]
+```
+
+**Note: While this method is very exact it would not be recommended in a tickerplant receiving many messages as the overhead of polling the filesystem for the file size can be a slow operation.**
 
 The int value now starts from `0` and increments each time a partition is added:
 
 ```q
-q)select from trade
-int    sym time                 price      size
------------------------------------------------
-0 fgl 0D07:43:50.772510000 0.08123546 7
-0 fgl 0D07:43:51.785912000 0.08123546 7
+q)select from quote
+int sym time                          bid       ask        bsize asize
+----------------------------------------------------------------------
+0   baf 2020.06.28D17:15:54.751561000 0.3867353 0.3869818  5     7
+0   baf 2020.06.28D17:15:54.751561000 0.726781  0.6324114  2     8
+```
+
+On startup the tickerplant must list all files using [key](https://code.kx.com/q/ref/key/#files-in-a-folder) and determine the maximum partition value to use:
+
+```q
+p:{f:x where x like (get `..src),"_*";$[count f;max "J"$.[;((::);1)]"_" vs'string f;0]}key `:.;
 ```
 
 Now that our partitions are no longer tied to a strict time domain the previous solution of a smaller helper function is not sufficient to enable efficient querying. A lookup table will be needed to enable smart lookups across the partitions.
 
 ```q
 q)lookup
-part tab minTS maxTS
---------------------
-//Todo: Add sample rows here
+part tab   minTS                         maxTS
+----------------------------------------------------------------------
+0    quote 2020.06.28D17:14:33.520763000 2020.06.28D17:15:54.751561000
+0    trade 2020.06.28D17:14:33.515537000 2020.06.28D17:15:54.748619000
+1    quote 2020.06.28D17:15:54.762522000 2020.06.28D17:16:57.867296000
+1    trade 2020.06.28D17:15:54.757298000 2020.06.28D17:16:57.864316000
 ```
 
-This table sits in the root of the HDB. Each time a partition is written the lookup table has new information appended to it.
+This table sits in the root of the HDB. Each time a partition is written the lookup table has new information appended to it by `.u.addLookup`:
 
 ```q
-//ToDo: show change in .u.end which appends to lookup
+.u.addLookup:{`:lookup/ upsert .Q.en[`:.] raze {select part:enlist x,tab:enlist y,minTS:min time,maxTS:max time from y}[x] each tables[]};
 ```
 
-During reload the latest version of lookup is brought in to memory and keyed. This the speed of lookups and also prevents users querying it while it is being appended to on disk.
-
-At query time a new helper function `findInts` can be used
+`saveAndReload` replaces `.Q.hdpf` as now when the HDB is reloading `cacheLookup` needs to be called:
 
 ```q
-//ToDo: Show definition of findInts and examples of it being used
+k)saveAndReload:{[h;d;p;f](@[`.;;0#].Q.dpft[d;p;f]@)'t@>(#.:)'t:.q.tables`.;if[h:@[hopen;h;0];h"system\"l .\";cacheLookup[]";>h]};
 ```
+
+`cacheLookup` reads from the `lookup` from disk and creates an optimised dictionary `intLookup` which will be used when querying data:
+
+```q
+cacheLookup:{
+ if[`lookup in tables[];
+ intLookup::.Q.pt!{`lim xasc ungroup select (count[i]*2)#part,lim:{x,y}[minTS;maxTS] from lookup where tab=x} each .Q.pt];
+ };
+ ```
+
+A new helper function `findInts` in how users will perform efficient queries on this database:
+
+```q
+findInts:{[t;s;e] exec distinct part from intLookup[t] where lim within (s;e)}
+```
+
+```
+q)select from quote where int in findInts[`quote;2020.06.28D17:15:54.75;2020.06.28D17:15:54.77],time within 2020.06.28D17:15:54.75 2020.06.28D17:15:54.77
+int sym time                          bid       ask        bsize asize
+----------------------------------------------------------------------
+0   baf 2020.06.28D17:15:54.751561000 0.3867353 0.3869818  5     7
+0   baf 2020.06.28D17:15:54.751561000 0.726781  0.6324114  2     8
+1   baf 2020.06.28D17:15:54.762522000 0.3867353 0.3869818  5     7
+1   baf 2020.06.28D17:15:54.762522000 0.726781  0.6324114  2     8
+1   igf 2020.06.28D17:15:54.762522000 0.9877844 0.7750292  9     4
+```
+
+The full extent of the changes are best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/commit/abba35c3dc1806181c03dd084cc8a5059d2c242a).
 
 ## Possible extensions
 
+### Filter time buffer
+
 The `hour` helper is exact, this may be to exact for some use cases. For example a table with multiple timestamps which are created as the data flows through various processes. This timestamps will be slightly behind the final timestamp created in the tickerplant.
+
+**Note: This issue is not limited to `int` partitioning and can be beneficial in any partitioned database.**
 
 If a user queries without accounting for this they could be presented with incomplete results:
 
@@ -165,7 +212,7 @@ If a user queries without accounting for this they could be presented with incom
 select from trade where int within hour 2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
 ```
 
-This can be manually accounted for:
+This can be manually accounted for by adding a buffer to the end value of your time window. Here one second is used:
 
 ```q
 select from trade where int within hour 0D 0D00:01+2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
@@ -178,11 +225,20 @@ buffInts:{hour 0D 0D00:01+x}
 select from trade where int within buffInts 2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
 ```
 
-We could apply a similar buffered lookup in the fixed partition use case. However an even more powerful solution would be to extend the lookup table to store exact information for as many columns as we wish:
+### Extended lookup table
+
+Choosing a buffer value is an inexact science. A more efficient solution is to use a `lookup` table, this will allow for fast queries in both the hourly and fixed size partition examples. The table can be extended to include any extra columns as needed:
 
 ```q
 q)lookup
 part tab minTS maxTS minOtherCol maxOtherCol
 --------------------------------------------
-//Todo: Add sample rows here
 ```
+
+The user would then pass in an extra parameter to `findInts` to specify which column to use when choosing int partitions:
+
+```q
+findInts[`quote;`otherCol;2020.06.28D16;2020.06.28D17]
+```
+
+These lookup tables are very powerful. Not only in these cases where data is slightly delayed but in fact any delay can how be handled gracefully, even if data is months late the lookup table protects against expensive full database scans or users missing data by making their queries to restrictive in their lookup of partitions assuming a certain maximum 'lateness' of data.
