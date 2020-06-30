@@ -1,5 +1,12 @@
 # Partitioning data in kdb+
 
+- [Partitioning data in kdb+](#partitioning-data-in-kdb)
+  - [Hourly Partitioning](#hourly-partitioning)
+  - [Fixed size partitioning](#fixed-size-partitioning)
+  - [Handling late data](#handling-late-data)
+    - [Filter time buffer](#filter-time-buffer)
+    - [Extended lookup table](#extended-lookup-table)
+
 Kdb+ supports partitioned databases. This means that when data is stored to disk it is [partitioned](https://code.kx.com/q4m3/14_Introduction_to_Kdb+/#143-partitioned-tables) in to different folders.
 
     /HDB
@@ -33,7 +40,7 @@ Aside from `date` the other possible choices for the [parted domain](https://cod
 
 In the rest of this post we will explore some uses of `int` partitioning.
 
-*Note: This post serves as a discussion on a topic - it is not intended as deployable code in mission critical systems*
+**Note: This post serves as a discussion on a topic - it is not intended as deployable code in mission critical systems**
 
 ## Hourly Partitioning
 
@@ -108,6 +115,22 @@ select from trade where int=hour 2020.06.27D16
 select from trade where int within hour 2020.06.26D0 2020.06.27D16
 ```
 
+If you wish to store data prior to the kdb+ epoch `2000.01.01D0` you will need to make some adjustments. This is due to a requirement for the int partitions to have positive values.
+
+To use a different epoch only small changes are needed. Here `1970.01.01`:
+
+```q
+hour:{`int$sum 24 1*@[;0;-;1970.01.01] `date`hh$\:x}
+intToDate:{1970.01.01+x div 24}
+```
+
+```q
+q)hour 2020.06.27D16
+442576i
+q)intToDate 442576i
+2020.06.27
+```
+
 ## Fixed size partitioning
 
 One possible concern with hourly partitioning would be the fact that data does not always stream at a steady rate. This would lead to partitions of varying sizes and would not protect a system well if there was a sudden surge in volume of incoming data.
@@ -143,7 +166,10 @@ int sym time                          bid       ask        bsize asize
 On startup the tickerplant must list all files using [key](https://code.kx.com/q/ref/key/#files-in-a-folder) and determine the maximum partition value to use:
 
 ```q
-p:{f:x where x like (get `..src),"_*";$[count f;max "J"$.[;((::);1)]"_" vs'string f;0]}key `:.;
+p:{
+ f:x where x like (get `..src),"_*";
+ $[count f;max "J"$.[;((::);1)]"_" vs'string f;0]
+ } key `:.
 ```
 
 Now that our partitions are no longer tied to a strict time domain the previous solution of a smaller helper function is not sufficient to enable efficient querying. A lookup table will be needed to enable smart lookups across the partitions.
@@ -161,13 +187,20 @@ part tab   minTS                         maxTS
 This table sits in the root of the HDB. Each time a partition is written the lookup table has new information appended to it by `.u.addLookup`:
 
 ```q
-.u.addLookup:{`:lookup/ upsert .Q.en[`:.] raze {select part:enlist x,tab:enlist y,minTS:min time,maxTS:max time from y}[x] each tables[]};
+.u.addLookup:{
+ `:lookup/ upsert .Q.en[`:.] raze {select part:enlist x,tab:enlist y,
+  minTS:min time,maxTS:max time from y}[x] each tables[]
+ };
 ```
 
 `saveAndReload` replaces `.Q.hdpf` as now when the HDB is reloading `cacheLookup` needs to be called:
 
 ```q
-k)saveAndReload:{[h;d;p;f](@[`.;;0#].Q.dpft[d;p;f]@)'t@>(#.:)'t:.q.tables`.;if[h:@[hopen;h;0];h"system\"l .\";cacheLookup[]";>h]};
+k)saveAndReload:{[h;d;p;f]
+ (@[`.;;0#].Q.dpft[d;p;f]@)'t@>(#.:)'t:.q.tables`.;
+ if[h:@[hopen;h;0];
+   h"system\"l .\";cacheLookup[]";>h]
+ };
 ```
 
 `cacheLookup` reads from the `lookup` from disk and creates an optimised dictionary `intLookup` which will be used when querying data:
@@ -175,7 +208,10 @@ k)saveAndReload:{[h;d;p;f](@[`.;;0#].Q.dpft[d;p;f]@)'t@>(#.:)'t:.q.tables`.;if[h
 ```q
 cacheLookup:{
  if[`lookup in tables[];
- intLookup::.Q.pt!{`lim xasc ungroup select (count[i]*2)#part,lim:{x,y}[minTS;maxTS] from lookup where tab=x} each .Q.pt];
+ intLookup::.Q.pt!{
+    `lim xasc ungroup select (count[i]*2)#part,lim:{x,y
+    }[minTS;maxTS] from lookup where tab=x
+  } each .Q.pt];
  };
  ```
 
@@ -186,7 +222,8 @@ findInts:{[t;s;e] exec distinct part from intLookup[t] where lim within (s;e)}
 ```
 
 ```
-q)select from quote where int in findInts[`quote;2020.06.28D17:15:54.75;2020.06.28D17:15:54.77],time within 2020.06.28D17:15:54.75 2020.06.28D17:15:54.77
+q)select from quote where int in findInts[`quote;2020.06.28D17:15:54.75;2020.06.28D17:15:54.77], 
+ time within 2020.06.28D17:15:54.75 2020.06.28D17:15:54.77
 int sym time                          bid       ask        bsize asize
 ----------------------------------------------------------------------
 0   baf 2020.06.28D17:15:54.751561000 0.3867353 0.3869818  5     7
@@ -198,7 +235,7 @@ int sym time                          bid       ask        bsize asize
 
 The full extent of the changes are best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/commit/abba35c3dc1806181c03dd084cc8a5059d2c242a).
 
-## Possible extensions
+## Handling late data
 
 ### Filter time buffer
 
@@ -215,14 +252,16 @@ select from trade where int within hour 2020.06.26D0 2020.06.26D07, otherTimeCol
 This can be manually accounted for by adding a buffer to the end value of your time window. Here one second is used:
 
 ```q
-select from trade where int within hour 0D 0D00:01+2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
+select from trade where int within hour 0D 0D00:01+2020.06.26D0 2020.06.26D07,
+ otherTimeCol=2020.06.26D0 2020.06.26D07
 ```
 
 Better still would be wrap this in a small utility for ease of use:
 
 ```q
 buffInts:{hour 0D 0D00:01+x}
-select from trade where int within buffInts 2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
+select from trade where int within buffInts 2020.06.26D0 2020.06.26D07,
+ otherTimeCol=2020.06.26D0 2020.06.26D07
 ```
 
 ### Extended lookup table
@@ -241,4 +280,4 @@ The user would then pass in an extra parameter to `findInts` to specify which co
 findInts[`quote;`otherCol;2020.06.28D16;2020.06.28D17]
 ```
 
-These lookup tables are very powerful. Not only in these cases where data is slightly delayed but in fact any delay can how be handled gracefully, even if data is months late the lookup table protects against expensive full database scans or users missing data by making their queries to restrictive in their lookup of partitions assuming a certain maximum 'lateness' of data.
+These lookup tables are very powerful. Not only in these cases where data is slightly delayed but in fact any delay can how be handled gracefully, even if data is months late the lookup table protects against expensive full database scans or users missing data by making their queries too restrictive in their lookup of partitions assuming a certain maximum 'lateness' of data.
