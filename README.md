@@ -6,6 +6,9 @@
   - [Handling late data](#handling-late-data)
     - [Filter time buffer](#filter-time-buffer)
     - [Extended lookup table](#extended-lookup-table)
+  - [Reducing number of files](#reducing-number-of-files)
+    - [Reducing hourly partitions](#reducing-hourly-partitions)
+    - [Reducing fixed partitions](#reducing-fixed-partitions)
 
 Kdb+ supports partitioned databases. This means that when data is stored to disk it is [partitioned](https://code.kx.com/q4m3/14_Introduction_to_Kdb+/#143-partitioned-tables) in to different folders.
 
@@ -281,3 +284,92 @@ findInts[`quote;`otherCol;2020.06.28D16;2020.06.28D17]
 ```
 
 These lookup tables are very powerful. Not only in these cases where data is slightly delayed but in fact any delay can how be handled gracefully, even if data is months late the lookup table protects against expensive full database scans or users missing data by making their queries too restrictive in their lookup of partitions assuming a certain maximum 'lateness' of data.
+
+## Reducing number of files
+
+One side effect of int partitioning is a larger numbers of files being created on disk. At query time this can result in slower response time if many partitions need to be opened and scanned. Errors can also occur if the process [ulimit](https://code.kx.com/q/kb/linux-production/#compression) is breached. At an extreme the file system may run out of [inode](https://en.wikipedia.org/wiki/Inode) allocation space. Choosing how often a partition is created is one way to prevent too many files. Another is to implement a `defrag` process which will join several partitions together.
+
+This process is started and passed the ports for the RDB and HDB:
+
+```bash
+q defrag.q -s 4 ::5011 ::5012
+```
+
+`-s 4` is passed to create [secondary threads](https://code.kx.com/q/basics/cmdline/#-s-secondary-threads) so multiple cores are used to speed up the task.
+
+The `defrag` function is then available which takes the following parameters:
+
+* `hdb` - hsym to root of HDB
+* `src` - int list of partitions to combine
+* `dst` - int destination partition
+* `comp` - [compression](https://code.kx.com/q/basics/internal/#-19-compress-file) settings
+* `p` - symbol column name to apply [parted attribute](https://code.kx.com/q/basics/internal/#-19-compress-file) on
+* `typ` - symbol `hourly` of `fixed` to specify the type of HDB
+
+It's source is viewable in [defrag.q](https://github.com/rianoc/partitioning/blob/master/defrag.q)
+
+### Reducing hourly partitions
+
+```q
+defrag[`:hourly/HDB;179608 179609;179608;17 2 6;`sym;`hourly]
+```
+
+For data to remain queryable in a performant manner there are some requirements:
+
+* Partitions being joined must be contiguous
+* The destination must be the minimum partition of the source list
+
+These requirements are related to how the previously used `hour` function will be replaced. Now that the partitions are combined it will not function correctly:
+
+```q
+q)select from trade where int in hour 2020.06.27D17, time within 2020.06.27D17 2020.06.27D18
+int sym time price size
+-----------------------
+```
+
+This is due to the function expecting the data to be in partition `179609` which no longer exists as it has been merged in to `179608`.
+
+To solve this we can make use of the [bin](https://code.kx.com/q/ref/bin/) function. It returns the prevailing bucket a value falls in to:
+
+```q
+q)list:0 2 4
+q)list bin 0 1 3 5
+0 0 1 2
+q)list list bin 0 1 3 5
+0 0 2 4
+```
+
+When kdb+ loads a partitioned database it creates a global variable which contains the list of all partitions. For date partitioned it is name `date` and for int `int` etc. This list can then be used to extend our `hour` function with `bin` to find the correct bucket:
+
+```q
+q)hour:{int int bin `int$sum 24 1*`date`hh$\:x}
+```
+
+Our combined hours now correctly return that they both reside within a single partition:
+
+```q
+q)hour 2020.06.27D16
+179608
+q)hour 2020.06.27D17
+179608
+```
+
+The previously failing query now succeeds:
+
+```q
+q)select from trade where int in hour 2020.06.27D17, time within 2020.06.27D17 2020.06.27D18
+int    sym time                          price    size
+------------------------------------------------------
+179608 baf 2020.06.27D17:00:00.000000000 0.949975 1   
+179608 baf 2020.06.27D17:00:00.050000000 0.391543 2  
+```
+
+### Reducing fixed partitions
+
+```q
+defrag[`:fixed/HDB;0 1 2 3 4;0;17 2 6;`sym;`fixed]
+```
+
+The requirements about how partitions are combined which applied to hourly database do not apply to the fixed database. This is because the `lookup` table exists.
+
+After running `defrag` no changes are needed in the helper function `findInts`. Instead during `defrag` the lookup table is updated with the latest information regarding partitions. To ensure two processes do not try to write to `lookup` simultaneously the RDB is contacted to perform this step.
