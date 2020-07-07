@@ -55,7 +55,7 @@ Firstly a helper function is needed to convert timestamps to an int equivalent:
 hour:{`int$sum 24 1*`date`hh$\:x}
 ```
 
-This `hour` function takes a timestamp calculates the number of hours since the kdb+ epoch:
+This `hour` function takes a timestamp and calculates the number of hours since the kdb+ epoch:
 
 ```q
 q)hour 2000.01.01D01
@@ -242,7 +242,7 @@ The full extent of the changes are best explored by reviewing the [git commit](h
 
 ### Filter time buffer
 
-The `hour` helper is exact, this may be to exact for some use cases. For example a table with multiple timestamps which are created as the data flows through various processes. This timestamps will be slightly behind the final timestamp created in the tickerplant.
+The `hour` helper is exact, this may be to exact for some use cases. For example a table with multiple timestamp columns which are created as the data flows through various processes. These other timestamp columns will be slightly behind the final timestamp created in the tickerplant.
 
 **Note: This issue is not limited to `int` partitioning and can be beneficial in any partitioned database.**
 
