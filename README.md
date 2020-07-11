@@ -3,6 +3,7 @@
 - [Partitioning data in kdb+](#partitioning-data-in-kdb)
   - [Hourly Partitioning](#hourly-partitioning)
   - [Fixed size partitioning](#fixed-size-partitioning)
+    - [Alternate methods to control when to partition](#alternate-methods-to-control-when-to-partition)
   - [Handling late data](#handling-late-data)
     - [Filter time buffer](#filter-time-buffer)
     - [Extended lookup table](#extended-lookup-table)
@@ -238,6 +239,62 @@ int sym time                          bid       ask        bsize asize
 
 The full extent of the changes are best explored by reviewing the [git commit](https://github.com/rianoc/partitioning/commit/abba35c3dc1806181c03dd084cc8a5059d2c242a).
 
+### Alternate methods to control when to partition
+
+Rather than polling the file system to use as a metric to trigger the creation of a new partition other methods could be chosen. Methods can be basic, needing some human tuning of limits to be useful, or exact (even for dynamic incoming data) but possibly computationally expensive.
+
+One choice would be a basic count of cumulative rows across all incoming table data and trigger at a pre-set limit. However, the resulting size of data could vary wildly depending on the number of columns in the tables.
+
+For a slightly more dynamic/accurate method one could could use a lookup dictionary of the size in bytes of each [datatype](https://code.kx.com/q/basics/datatypes/):
+
+```q
+typeSizes:(`short$neg (1+til 19) except 3)!1 16 1 2 4 8 4 8 1 8 8 4 4 8 8 4 4 4
+calcSize:{sum count[x]*typeSizes type each value first x}
+```
+
+To test we replay a 5121KB tickerplant transaction log using [-11!](https://code.kx.com/q/basics/internal/#-11-streaming-execute):
+
+```q
+q)quote:([]time:`timestamp$();sym:`symbol$();bid:`float$();ask:`float$();bsize:`int$();asize:`int$())
+q)trade:([]time:`timestamp$();sym:`symbol$();price:`float$();size:`int$())
+q)upd:insert
+q)-11!`sym_0
+12664
+q)div[;1024] sum calcSize each (trade;quote)
+q)4204
+```
+
+The resulting estimate is 4204KB. Comparing this to the size of the same data as stored on disk (uncompressed) results in a similar 4244KB:
+
+```bash
+$du -s HDB/0
+4244    HDB/0
+```
+
+The main flaw with the `calcSize` function is it's inability to calculate the size of data in array columns, such as the string type. It could be extended to account for this but then it's complexity and run time would increase as it would need to integrate each cell rather than using only the first row as it does in it's basic form.
+
+Kdb+ itself provides a shortcut to calculate the IPC serialised size of an object with [-22!](https://code.kx.com/q/basics/internal/#-22x-uncompressed-length):
+
+```q
+q)div[;1024] sum -22!/:(trade;quote)
+3710
+```
+
+While optimised for speed `-22!` remains an expensive operation. It also gives inaccurate results for symbol type data as in memory they are interned for efficiency but during IPC transfer use varying space depending on their length.
+
+In common with  `calcSize` both these methods also suffer from being unable to account for the memory overheads associated with any columns which have [attributes](https://code.kx.com/q/ref/set-attribute/) applied to them.
+
+In the process itself [.Q.w](https://code.kx.com/q/ref/dotq/#qw-memory-stats) can be interrogated to view actual memory reserved in the heap and used by objects:
+
+```
+q)div[;1024] .Q.w[]`heap`used
+65536 4702
+```
+
+Whilst `.Q.w` in the RDB may seem like a good way to trigger in practice having the tickerplant poll another process is not a good idea as it is designed to be a self contained process which will reliably store the transaction log and never be able to be blocked a downstream process, it publishes data asynchronously for this reason.
+
+Overall this is an area where the ["keep it simple, stupid"](https://en.wikipedia.org/wiki/KISS_principle) principle applies. There is little benefit to attempting to be too exact. Choosing a simple method and allowing a cautious RAM overhead for any inaccuracy is the best path to follow.
+
 ## Handling late data
 
 ### Filter time buffer
@@ -269,13 +326,38 @@ select from trade where int within buffInts 2020.06.26D0 2020.06.26D07,
 
 ### Extended lookup table
 
-Choosing a buffer value is an inexact science. A more efficient solution is to use a `lookup` table, this will allow for fast queries in both the hourly and fixed size partition examples. The table can be extended to include any extra columns as needed:
+Choosing a buffer value is an inexact science. A more efficient solution is to use a `lookup` table, this will allow for fast queries in both the hourly and fixed size partition examples. The table can be extended to include any extra columns as needed. `.u.addLookup` is edited to gather stats on the extra columns as needed:
+
+```q
+.u.addLookup:{
+ `:lookup/ upsert .Q.en[`:.] raze {select part:enlist x,tab:enlist y,
+  minTS:min time,maxTS:max time,
+  minOtherCol:min otherCol,maxOtherCol:max otherCol,
+   from y}[x] each tables[]
+ };
+```
 
 ```q
 q)lookup
 part tab minTS maxTS minOtherCol maxOtherCol
 --------------------------------------------
 ```
+
+`cacheLookup` behaviour and the `intLookup` it creates are now also changed:
+
+```q
+cacheLookup:{
+ if[`lookup in tables[];
+ intLookup::`lim xasc ungroup select column:`time`time`otherCol`otherCol,
+             lim:(minTS,maxTS,minOtherCol,maxOtherCol) by part,tab from lookup;
+ };
+ ```
+
+ ```q
+ intLookup:{[t;c;s;e]
+  exec distinct part from intLookup where tab=t,column=c,lim within (s;e)
+ }
+ ```
 
 The user would then pass in an extra parameter to `findInts` to specify which column to use when choosing int partitions:
 
