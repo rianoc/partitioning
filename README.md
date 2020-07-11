@@ -455,3 +455,5 @@ defrag[`:fixed/HDB;0 1 2 3 4;0;17 2 6;`sym;`fixed]
 The requirements about how partitions are combined which applied to hourly database do not apply to the fixed database. This is because the `lookup` table exists.
 
 After running `defrag` no changes are needed in the helper function `findInts`. Instead during `defrag` the lookup table is updated with the latest information regarding partitions. To ensure two processes do not try to write to `lookup` simultaneously the RDB is contacted to perform this step.
+
+The logic for this is best explored by viewing the [reloadFixed](https://github.com/rianoc/partitioning/blob/1c34431fed9fdc5cff9b4fe3b63fc5a9b5b57621/defrag.q#L32) function defined in `defrag.q`.
