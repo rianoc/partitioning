@@ -1,7 +1,7 @@
 # Partitioning data in kdb+
 
 - [Partitioning data in kdb+](#partitioning-data-in-kdb)
-  - [Hourly Partitioning](#hourly-partitioning)
+  - [Hourly partitioning](#hourly-partitioning)
   - [Fixed size partitioning](#fixed-size-partitioning)
     - [Alternate methods to control when to partition](#alternate-methods-to-control-when-to-partition)
   - [Handling late data](#handling-late-data)
@@ -37,7 +37,8 @@ This physical partitioning and seamless filtering allows kdb+ to perform very pe
 Furthermore native [map-reduce](https://code.kx.com/q/wp/multi-thread/#map-reduce-with-multi-threading) allow queries which span multiple partitions to make use of [multi-threading](https://code.kx.com/q/wp/multi-thread/#map-reduce-with-multi-threading) for further speedup:
 
 ```q
-select vwap: size wavg price by sym from trade where date within 2020.06.01 2020.06.26
+select vwap: size wavg price by sym from trade
+ where date within 2020.06.01 2020.06.26
 ```
 
 Aside from `date` the other possible choices for the [parted domain](https://code.kx.com/q4m3/14_Introduction_to_Kdb+/#1432-partition-domain) are: `year`, `month`, and `int`.
@@ -46,7 +47,7 @@ In the rest of this post we will explore some uses of `int` partitioning.
 
 **Note: This post serves as a discussion on a topic - it is not intended as deployable code in mission critical systems**
 
-## Hourly Partitioning
+## Hourly partitioning
 
 Hourly Partitioning can be used as a way to reduce the RAM footprint of a kdb+ system. This solution is very simple to implement but not as as powerful as a fully thought out [intraday-writedown](https://code.kx.com/q/wp/intraday-writedown) solution.
 
@@ -77,7 +78,7 @@ Taking [kdb-tick](https://github.com/KxSystems/kdb-tick) as a template very few 
     1000000i
     ```
 
-3. Moving the `time` column from a timestamp (`n`) to a timestamp (`p`) was chosen. This [datatype](https://code.kx.com/q/basics/datatypes/) does not use more space or loose any precision but has the benefit of including the date which is helpful to allow viewing of the date now that the `date` column is removed. Another option is a helper function to extract the date back from the encoded `int` column:
+3. Moving the `time` column from a timestamp (`n`) to a timestamp (`p`) was chosen. This [datatype](https://code.kx.com/q/basics/datatypes/) does not use more space or lose any precision but has the benefit of including the date which is helpful to allow viewing of the date now that the `date` column is removed. Another option is a helper function to extract the date back from the encoded `int` column:
 
     ```q
     q)intToDate:{`date$x div 24}
@@ -197,7 +198,7 @@ This table sits in the root of the HDB. Each time a partition is written the loo
  };
 ```
 
-`saveAndReload` replaces `.Q.hdpf` as now when the HDB is reloading `cacheLookup` needs to be called:
+`saveAndReload` replaces [.Q.hdpf](https://code.kx.com/q/ref/dotq/#qhdpf-save-tables) as now when the HDB is reloading `cacheLookup` needs to be called:
 
 ```q
 k)saveAndReload:{[h;d;p;f]
@@ -219,14 +220,15 @@ cacheLookup:{
  };
  ```
 
-A new helper function `findInts` in how users will perform efficient queries on this database:
+A new helper function `findInts` is how users will perform efficient queries on this database:
 
 ```q
 findInts:{[t;s;e] exec distinct part from intLookup[t] where lim within (s;e)}
 ```
 
 ```
-q)select from quote where int in findInts[`quote;2020.06.28D17:15:54.75;2020.06.28D17:15:54.77], 
+q)select from quote where 
+ int in findInts[`quote;2020.06.28D17:15:54.75;2020.06.28D17:15:54.77], 
  time within 2020.06.28D17:15:54.75 2020.06.28D17:15:54.77
 int sym time                          bid       ask        bsize asize
 ----------------------------------------------------------------------
@@ -306,14 +308,17 @@ The `hour` helper is exact, this may be to exact for some use cases. For example
 If a user queries without accounting for this they could be presented with incomplete results:
 
 ```q
-select from trade where int within hour 2020.06.26D0 2020.06.26D07, otherTimeCol=2020.06.26D0 2020.06.26D07
+select from trade where 
+ int within hour 2020.06.26D0 2020.06.26D07, 
+ otherTimeCol within 2020.06.26D0 2020.06.26D07
 ```
 
 This can be manually accounted for by adding a buffer to the end value of your time window. Here one second is used:
 
 ```q
-select from trade where int within hour 0D 0D00:01+2020.06.26D0 2020.06.26D07,
- otherTimeCol=2020.06.26D0 2020.06.26D07
+select from trade where 
+ int within hour 0D 0D00:01+2020.06.26D0 2020.06.26D07,
+ otherTimeCol within 2020.06.26D0 2020.06.26D07
 ```
 
 Better still would be wrap this in a small utility for ease of use:
@@ -404,7 +409,8 @@ For data to remain queryable in a performant manner there are some requirements:
 These requirements are related to how the previously used `hour` function will be replaced. Now that the partitions are combined it will not function correctly:
 
 ```q
-q)select from trade where int in hour 2020.06.27D17, time within 2020.06.27D17 2020.06.27D18
+q)select from trade where int in hour 2020.06.27D17, 
+   time within 2020.06.27D17 2020.06.27D18
 int sym time price size
 -----------------------
 ```
@@ -439,7 +445,8 @@ q)hour 2020.06.27D17
 The previously failing query now succeeds:
 
 ```q
-q)select from trade where int in hour 2020.06.27D17, time within 2020.06.27D17 2020.06.27D18
+q)select from trade where int in hour 2020.06.27D17, 
+   time within 2020.06.27D17 2020.06.27D18
 int    sym time                          price    size
 ------------------------------------------------------
 179608 baf 2020.06.27D17:00:00.000000000 0.949975 1   
