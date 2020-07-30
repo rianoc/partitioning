@@ -359,7 +359,7 @@ cacheLookup:{
  ```
 
  ```q
- intLookup:{[t;c;s;e]
+ findInts:{[t;c;s;e]
   exec distinct part from intLookup where tab=t,column=c,lim within (s;e)
  }
  ```
