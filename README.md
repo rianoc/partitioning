@@ -391,7 +391,7 @@ The `defrag` function is then available which takes the following parameters:
 * `dst` - int destination partition
 * `comp` - [compression](https://code.kx.com/q/basics/internal/#-19-compress-file) settings
 * `p` - symbol column name to apply [parted attribute](https://code.kx.com/q/basics/internal/#-19-compress-file) on
-* `typ` - symbol `hourly` of `fixed` to specify the type of HDB
+* `typ` - symbol `hourly` or `fixed` to specify the type of HDB
 
 It's source is viewable in [defrag.q](https://github.com/rianoc/partitioning/blob/master/defrag.q)
 
