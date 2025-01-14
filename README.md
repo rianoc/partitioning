@@ -273,7 +273,7 @@ $du -s HDB/0
 4244    HDB/0
 ```
 
-The main flaw with the `calcSize` function is it's inability to calculate the size of data in array columns, such as the string type. It could be extended to account for this but then it's complexity and run time would increase as it would need to integrate each cell rather than using only the first row as it does in it's basic form.
+The main flaw with the `calcSize` function is it's inability to calculate the size of data in array columns, such as the string type. It could be extended to account for this but then it's complexity and run time would increase as it would need to interrogate each cell rather than using only the first row as it does in it's basic form.
 
 Kdb+ itself provides a shortcut to calculate the IPC serialised size of an object with [-22!](https://code.kx.com/q/basics/internal/#-22x-uncompressed-length):
 
